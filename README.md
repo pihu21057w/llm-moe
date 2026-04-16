@@ -109,6 +109,90 @@ Reasoning controls:
 - --reasoning-hidden-mult: hidden size multiplier for reasoning FFN
 - --reasoning-no-share-parameters: use separate reasoning cell per block
 
+## Configuration API
+
+The project exposes typed dataclass configs in `llmcore.config`:
+
+- `ModelConfig`: architecture settings
+- `DataConfig`: data source and tokenization settings
+- `TrainConfig`: runtime, logging, checkpoint, and optimizer settings
+- `OptimConfig`: nested inside `TrainConfig.optim`
+
+### Python config example
+
+```python
+from llmcore.config import ModelConfig, DataConfig, TrainConfig
+
+model_cfg = ModelConfig(
+  d_model=1536,
+  n_layers=24,
+  n_heads=16,
+  n_kv_heads=4,
+  d_ff=6144,
+  max_seq_len=1024,
+  attention_backend="auto",
+  rope_scaling="linear",
+  rope_scaling_factor=1.0,
+  moe_every_n_layers=4,
+  moe_num_experts=4,
+  moe_top_k=2,
+  reasoning_steps=3,
+  reasoning_share_parameters=True,
+)
+
+data_cfg = DataConfig(
+  data_source="hf",
+  hf_dataset_name="pritamdeb68/Small-LM-Pretraining",
+  hf_split="train",
+  hf_text_columns=("text", "title", "summary", "content"),
+  sequence_length=1024,
+  validation_split=0.005,
+)
+
+train_cfg = TrainConfig(
+  output_dir="runs/hf-small-lm",
+  max_steps=2000,
+  micro_batch_size=1,
+  grad_accum_steps=16,
+  dtype="bfloat16",
+  save_every=100,
+  eval_every=100,
+  log_every=1,
+  use_activation_checkpointing=True,
+  reasoning_loss_weight=0.03,
+)
+
+train_cfg.optim.lr = 3e-4
+train_cfg.optim.weight_decay = 0.1
+train_cfg.optim.warmup_steps = 200
+train_cfg.optim.grad_clip_norm = 1.0
+```
+
+### Config field groups
+
+ModelConfig includes:
+
+- Core shape: `d_model`, `n_layers`, `n_heads`, `n_kv_heads`, `d_ff`
+- Attention: `attention_backend`, `rope_scaling`, `rope_scaling_factor`, `rope_theta`
+- MoE: `moe_every_n_layers`, `moe_num_experts`, `moe_top_k`, `moe_hidden_mult`
+- Reasoning: `reasoning_steps`, `reasoning_share_parameters`, `reasoning_residual_scale`, `reasoning_hidden_mult`
+- Misc: `dropout`, `tie_embeddings`, `use_rms_norm`, `use_checkpointing`
+
+DataConfig includes:
+
+- Local data: `data_path`, `data_source="local"`
+- Hugging Face: `data_source="hf"`, `hf_dataset_name`, `hf_dataset_config`, `hf_split`, `hf_text_columns`
+- Packing: `sequence_length`, `validation_split`, `max_documents`
+
+TrainConfig includes:
+
+- Loop control: `max_steps`, `micro_batch_size`, `grad_accum_steps`
+- Runtime: `device`, `dtype`, `compile_model`, `num_workers`, `pin_memory`
+- Monitoring: `monitor_tensorboard`, `monitor_csv`, `monitor_wandb`
+- Checkpoints: `save_every`, `save_last`, `save_optimizer_state`, `resume`
+- Reasoning objective: `reasoning_loss_weight`
+- Optimizer block: `train_cfg.optim` (`lr`, `betas`, `weight_decay`, `warmup_steps`, `grad_clip_norm`, `min_lr_ratio`)
+
 ## Key Training Flags
 
 Data:
