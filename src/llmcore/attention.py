@@ -11,6 +11,12 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     flash_attn_func = None
 
+try:
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+except Exception:  # pragma: no cover - fallback for older torch builds
+    SDPBackend = None
+    sdpa_kernel = None
+
 
 def _repeat_kv(x: torch.Tensor, repeats: int) -> torch.Tensor:
     if repeats == 1:
@@ -19,8 +25,8 @@ def _repeat_kv(x: torch.Tensor, repeats: int) -> torch.Tensor:
 
 
 def _scaled_dot_product_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout_p: float, causal: bool) -> torch.Tensor:
-    if q.is_cuda:
-        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False):
+    if q.is_cuda and sdpa_kernel is not None and SDPBackend is not None:
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
             return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=causal)
     return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=causal)
 
@@ -159,12 +165,14 @@ class Attention(nn.Module):
         k = _repeat_kv(k, self.kv_repeats)
         v = _repeat_kv(v, self.kv_repeats)
 
-        use_flash = self.backend in {"auto", "flash"} and flash_attn_func is not None and x.is_cuda
+        use_flash = self.backend in {"auto", "flash"} and flash_attn_func is not None and x.is_cuda and torch.cuda.get_device_capability(x.device)[0] >= 8
         if self.backend == "linear":
             attn = self.linear_attention(q, k, v, causal=causal)
         elif use_flash:
             attn = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), dropout_p=self.dropout.p if self.training else 0.0, causal=causal)
             attn = attn.transpose(1, 2)
+        elif self.backend == "auto" and x.is_cuda and torch.cuda.get_device_capability(x.device)[0] < 8:
+            attn = self.linear_attention(q, k, v, causal=causal)
         else:
             attn = _scaled_dot_product_attention(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, causal=causal)
         attn = attn.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)

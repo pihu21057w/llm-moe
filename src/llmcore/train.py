@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import warnings
 from dataclasses import asdict
 from time import perf_counter
 
@@ -70,6 +71,9 @@ def evaluate(model: DecoderOnlyTransformer, dataloader: DataLoader, device: torc
 
 def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validation_loader: DataLoader, tokenizer: GPT4Tokenizer, model_config: ModelConfig, train_config: TrainConfig, device: torch.device) -> None:
     dtype = get_dtype(train_config.dtype)
+    if device.type == "cuda" and dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        warnings.warn("bfloat16 is not supported on this GPU; falling back to float16.", stacklevel=2)
+        dtype = torch.float16
     model = model.to(device)
     if train_config.compile_model:
         model = torch.compile(model)
