@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - optional dependency
 def _repeat_kv(x: torch.Tensor, repeats: int) -> torch.Tensor:
     if repeats == 1:
         return x
-    return x.repeat_interleave(repeats, dim=2)
+    return x.repeat_interleave(repeats, dim=1)
 
 
 class RMSNorm(nn.Module):

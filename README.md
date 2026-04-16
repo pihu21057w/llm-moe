@@ -77,6 +77,7 @@ llmcore-train \
   --hf-text-columns text,title,summary,content \
   --hf-streaming \
   --hf-max-text-columns 4 \
+  --max-documents 50000 \
   --output-dir runs/hf-small-lm \
   --sequence-length 1024 \
   --micro-batch-size 1 \
@@ -95,6 +96,7 @@ Notes:
 - Use --hf-streaming for Hugging Face datasets that should be read lazily instead of loaded into RAM.
 - Use --hf-max-text-columns to cap the number of columns consumed when the dataset schema is very wide.
 - For very wide datasets, prefer an explicit fixed column list in --hf-text-columns.
+- If you only want a fixed amount of data, use --max-documents to cap the number of rows/documents read.
 
 ## Reasoning Architecture
 
@@ -190,7 +192,8 @@ DataConfig includes:
 - Local data: `data_path`, `data_source="local"`
 - Hugging Face: `data_source="hf"`, `hf_dataset_name`, `hf_dataset_config`, `hf_split`, `hf_text_columns`
 - Hugging Face streaming: `hf_streaming`, `hf_max_text_columns`
-- Packing: `sequence_length`, `validation_split`, `max_documents`
+- Row/document cap: `max_documents`
+- Packing: `sequence_length`, `validation_split`
 
 TrainConfig includes:
 

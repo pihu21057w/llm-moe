@@ -79,7 +79,6 @@ class DataConfig:
 class OptimConfig:
     lr: float = 3e-4
     betas: tuple[float, float] = (0.9, 0.95)
-    hf_streaming: bool = False
     weight_decay: float = 0.1
     grad_clip_norm: float = 1.0
     warmup_steps: int = 2000
@@ -88,7 +87,6 @@ class OptimConfig:
 
 @dataclass(slots=True)
 class TrainConfig:
-    hf_max_text_columns: int = 0
     output_dir: str = "runs/default"
     max_steps: int = 50_000
     micro_batch_size: int = 1
