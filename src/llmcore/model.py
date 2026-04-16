@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import warnings
 
 import torch
 from torch import nn
@@ -87,6 +88,13 @@ class DecoderOnlyTransformer(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config
+        self.checkpointing_enabled = bool(config.use_checkpointing and config.reasoning_steps == 0 and config.moe_every_n_layers == 0)
+        if config.use_checkpointing and not self.checkpointing_enabled:
+            warnings.warn(
+                "Activation checkpointing is disabled for this model configuration because MoE and/or reasoning steps are enabled. "
+                "The current full-block checkpoint path is not stable with dynamic routing.",
+                stacklevel=2,
+            )
         self.token_embeddings = nn.Embedding(config.vocab_size, config.d_model)
         shared_reasoner = ReasoningCell(config) if config.reasoning_share_parameters else None
         self.layers = nn.ModuleList([DecoderBlock(config, index, shared_reasoner=shared_reasoner) for index in range(config.n_layers)])
@@ -100,7 +108,7 @@ class DecoderOnlyTransformer(nn.Module):
         aux_losses = []
         reasoning_losses = []
         for layer in self.layers:
-            if self.training and self.config.use_checkpointing:
+            if self.training and self.checkpointing_enabled:
                 x, aux_loss, reasoning_loss = checkpoint(lambda hidden: layer(hidden, position_offset=position_offset), x, use_reentrant=False)
             else:
                 x, aux_loss, reasoning_loss = layer(x, position_offset=position_offset)
