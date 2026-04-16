@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmcore"
+version = "0.1.0"
+description = "Decoder-only transformer stack with MoE, RoPE scaling, linear attention, tool calling, and training utilities"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "rich>=13.7",
+  "safetensors>=0.4",
+  "tensorboard>=2.15",
+  "tiktoken>=0.7",
+  "torch>=2.4",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+wandb = ["wandb>=0.17"]
+flash-attn = []
+
+[project.scripts]
+llmcore-train = "llmcore.train:main"
+llmcore-generate = "llmcore.inference:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

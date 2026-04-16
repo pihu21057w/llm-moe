@@ -1,0 +1,11 @@
+numpy>=1.24
+rich>=13.7
+safetensors>=0.4
+tensorboard>=2.15
+tiktoken>=0.7
+torch>=2.4
+tqdm>=4.66
+
+# Optional:
+# wandb>=0.17
+# flash-attn is environment-specific and should be installed to match your CUDA stack
