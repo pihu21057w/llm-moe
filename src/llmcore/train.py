@@ -196,6 +196,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hf-config", default="")
     parser.add_argument("--hf-split", default="train")
     parser.add_argument("--hf-text-columns", default="")
+    parser.add_argument("--hf-streaming", action="store_true")
+    parser.add_argument("--hf-max-text-columns", type=int, default=0)
     parser.add_argument("--validation-split", type=float, default=0.005)
     parser.add_argument("--max-documents", type=int, default=0)
     parser.add_argument("--output-dir", default="runs/default")
@@ -266,6 +268,7 @@ def main() -> None:
     data_config = DataConfig(
         data_path=args.data,
         data_source=args.data_source,
+        hf_streaming=args.hf_streaming,
         tokenizer_name=args.tokenizer,
         sequence_length=args.sequence_length,
         validation_split=args.validation_split,
@@ -274,6 +277,7 @@ def main() -> None:
         hf_dataset_config=args.hf_config,
         hf_split=args.hf_split,
         hf_text_columns=hf_text_columns,
+        hf_max_text_columns=args.hf_max_text_columns,
     )
     train_config = TrainConfig(
         output_dir=args.output_dir,
@@ -305,13 +309,17 @@ def main() -> None:
         seed=data_config.seed,
         max_documents=data_config.max_documents,
         data_source=data_config.data_source,
+        hf_streaming=data_config.hf_streaming,
         hf_dataset_name=data_config.hf_dataset_name,
         hf_dataset_config=data_config.hf_dataset_config,
         hf_split=data_config.hf_split,
         hf_text_columns=data_config.hf_text_columns,
+        hf_max_text_columns=data_config.hf_max_text_columns,
     )
-    train_loader = DataLoader(datasets.train, batch_size=train_config.micro_batch_size, shuffle=True, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=True)
-    validation_loader = DataLoader(datasets.validation, batch_size=train_config.micro_batch_size, shuffle=False, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=False)
+    train_shuffle = not isinstance(datasets.train, torch.utils.data.IterableDataset)
+    validation_shuffle = False
+    train_loader = DataLoader(datasets.train, batch_size=train_config.micro_batch_size, shuffle=train_shuffle, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=True)
+    validation_loader = DataLoader(datasets.validation, batch_size=train_config.micro_batch_size, shuffle=validation_shuffle, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=False)
 
     device = torch.device(train_config.device if torch.cuda.is_available() or train_config.device == "cpu" else "cpu")
     model = DecoderOnlyTransformer(model_config)

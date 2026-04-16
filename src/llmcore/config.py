@@ -62,6 +62,7 @@ class ModelConfig:
 class DataConfig:
     data_path: str = ""
     data_source: DataSourceType = "local"
+    hf_streaming: bool = False
     tokenizer_name: str = "cl100k_base"
     sequence_length: int = 2048
     validation_split: float = 0.005
@@ -70,6 +71,7 @@ class DataConfig:
     hf_dataset_config: str = ""
     hf_split: str = "train"
     hf_text_columns: tuple[str, ...] = ()
+    hf_max_text_columns: int = 0
     seed: int = 42
 
 
@@ -77,6 +79,7 @@ class DataConfig:
 class OptimConfig:
     lr: float = 3e-4
     betas: tuple[float, float] = (0.9, 0.95)
+    hf_streaming: bool = False
     weight_decay: float = 0.1
     grad_clip_norm: float = 1.0
     warmup_steps: int = 2000
@@ -85,6 +88,7 @@ class OptimConfig:
 
 @dataclass(slots=True)
 class TrainConfig:
+    hf_max_text_columns: int = 0
     output_dir: str = "runs/default"
     max_steps: int = 50_000
     micro_batch_size: int = 1

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset, IterableDataset, random_split
 
 try:
     from datasets import load_dataset
@@ -65,13 +65,15 @@ def _read_documents(data_path: str, max_documents: int | None = None) -> list[st
     return [doc for doc in documents if doc.strip()]
 
 
-def _detect_text_columns(columns: list[str], rows: list[dict]) -> list[str]:
+def _detect_text_columns(columns: list[str], rows: list[dict], limit: int = 0) -> list[str]:
     detected: list[str] = []
     for column in columns:
         for row in rows:
             value = row.get(column)
             if isinstance(value, str) and value.strip():
                 detected.append(column)
+                if limit > 0 and len(detected) >= limit:
+                    return detected
                 break
     return detected
 
@@ -90,24 +92,48 @@ def _read_hf_documents(
     dataset_config: str,
     split: str,
     text_columns: tuple[str, ...],
+    max_text_columns: int,
     max_documents: int | None,
+    streaming: bool,
 ) -> list[str]:
     if load_dataset is None:
         raise ImportError("datasets package is not installed. Please install 'datasets' to use Hugging Face data sources.")
     if not dataset_name:
         raise ValueError("hf_dataset_name is required when data_source='hf'")
 
-    ds = load_dataset(dataset_name, dataset_config or None, split=split)
+    ds = load_dataset(dataset_name, dataset_config or None, split=split, streaming=streaming)
     if max_documents is not None:
+        if streaming:
+            documents: list[str] = []
+            for index, row in enumerate(ds):
+                if index >= max_documents:
+                    break
+                combined = _combine_row_text(row, list(text_columns))
+                if combined:
+                    documents.append(combined)
+            return documents
         ds = ds.select(range(min(max_documents, len(ds))))
 
-    sample_rows = [ds[index] for index in range(min(len(ds), 64))]
-    available_columns = list(ds.column_names)
-    columns = [column for column in text_columns if column in available_columns] if text_columns else []
-    if not columns:
-        columns = _detect_text_columns(available_columns, sample_rows)
-    if not columns:
-        raise ValueError("No usable text columns found in Hugging Face dataset")
+    if text_columns:
+        columns = list(text_columns[:max_text_columns]) if max_text_columns > 0 else list(text_columns)
+    else:
+        sample_rows: list[dict] = []
+        if streaming:
+            for index, row in enumerate(ds):
+                if index >= 64:
+                    break
+                sample_rows.append(row)
+        else:
+            sample_rows = [ds[index] for index in range(min(len(ds), 64))]
+        if hasattr(ds, "column_names"):
+            available_columns = list(ds.column_names)
+        elif sample_rows:
+            available_columns = list(sample_rows[0].keys())
+        else:
+            available_columns = []
+        columns = _detect_text_columns(available_columns, sample_rows, limit=max_text_columns)
+        if not columns:
+            raise ValueError("No usable text columns found in Hugging Face dataset")
 
     documents: list[str] = []
     for row in ds:
@@ -117,6 +143,77 @@ def _read_hf_documents(
         if max_documents is not None and len(documents) >= max_documents:
             break
     return documents
+
+
+class StreamingTokenBlockDataset(IterableDataset):
+    def __init__(
+        self,
+        *,
+        dataset_name: str,
+        dataset_config: str,
+        split: str,
+        text_columns: tuple[str, ...],
+        max_text_columns: int,
+        tokenizer: GPT4Tokenizer,
+        block_size: int,
+        validation_split: float,
+        mode: str,
+        max_documents: int | None,
+    ) -> None:
+        super().__init__()
+        self.dataset_name = dataset_name
+        self.dataset_config = dataset_config
+        self.split = split
+        self.text_columns = text_columns
+        self.max_text_columns = max_text_columns
+        self.tokenizer = tokenizer
+        self.block_size = block_size
+        self.validation_split = validation_split
+        self.mode = mode
+        self.max_documents = max_documents
+        self.newline_tokens = tokenizer.encode("\n")
+        self.validation_stride = max(1, round(1.0 / max(validation_split, 1e-6))) if validation_split > 0 else 0
+
+    def __iter__(self):
+        if load_dataset is None:
+            raise ImportError("datasets package is not installed. Please install 'datasets' to use Hugging Face data sources.")
+        if not self.dataset_name:
+            raise ValueError("hf_dataset_name is required when data_source='hf'")
+
+        ds = load_dataset(self.dataset_name, self.dataset_config or None, split=self.split, streaming=True)
+        columns = list(self.text_columns[: self.max_text_columns]) if self.max_text_columns > 0 and self.text_columns else list(self.text_columns)
+        if not columns:
+            sample_rows: list[dict] = []
+            for index, row in enumerate(ds):
+                if index >= 64:
+                    break
+                sample_rows.append(row)
+            available_columns = list(sample_rows[0].keys()) if sample_rows else []
+            columns = _detect_text_columns(available_columns, sample_rows, limit=self.max_text_columns)
+            if not columns:
+                raise ValueError("No usable text columns found in Hugging Face dataset")
+            ds = load_dataset(self.dataset_name, self.dataset_config or None, split=self.split, streaming=True)
+
+        buffer: list[int] = []
+        document_count = 0
+        block_index = 0
+        for row in ds:
+            if self.max_documents is not None and document_count >= self.max_documents:
+                break
+            document = _combine_row_text(row, columns)
+            if not document:
+                continue
+            document_count += 1
+            buffer.extend(self.tokenizer.encode(document))
+            buffer.extend(self.newline_tokens)
+            while len(buffer) >= self.block_size + 1:
+                chunk = buffer[: self.block_size + 1]
+                buffer = buffer[self.block_size :]
+                is_validation = self.validation_stride > 0 and (block_index % self.validation_stride == 0)
+                should_yield = (self.mode == "validation" and is_validation) or (self.mode == "train" and not is_validation)
+                if should_yield:
+                    yield torch.tensor(chunk[:-1], dtype=torch.long), torch.tensor(chunk[1:], dtype=torch.long)
+                block_index += 1
 
 
 class TokenBlockDataset(Dataset):
@@ -158,18 +255,49 @@ def build_datasets(
     seed: int = 42,
     max_documents: int | None = None,
     data_source: str = "local",
+    hf_streaming: bool = False,
     hf_dataset_name: str = "",
     hf_dataset_config: str = "",
     hf_split: str = "train",
     hf_text_columns: tuple[str, ...] = (),
+    hf_max_text_columns: int = 0,
 ) -> DatasetBundle:
     if data_source == "hf":
+        if hf_streaming:
+            return DatasetBundle(
+                train=StreamingTokenBlockDataset(
+                    dataset_name=hf_dataset_name,
+                    dataset_config=hf_dataset_config,
+                    split=hf_split,
+                    text_columns=hf_text_columns,
+                    tokenizer=tokenizer,
+                    block_size=sequence_length,
+                    validation_split=validation_split,
+                    mode="train",
+                    max_text_columns=hf_max_text_columns,
+                    max_documents=max_documents,
+                ),
+                validation=StreamingTokenBlockDataset(
+                    dataset_name=hf_dataset_name,
+                    dataset_config=hf_dataset_config,
+                    split=hf_split,
+                    text_columns=hf_text_columns,
+                    tokenizer=tokenizer,
+                    block_size=sequence_length,
+                    validation_split=validation_split,
+                    mode="validation",
+                    max_text_columns=hf_max_text_columns,
+                    max_documents=max_documents,
+                ),
+            )
         documents = _read_hf_documents(
             dataset_name=hf_dataset_name,
             dataset_config=hf_dataset_config,
             split=hf_split,
             text_columns=hf_text_columns,
+            max_text_columns=hf_max_text_columns,
             max_documents=max_documents,
+            streaming=False,
         )
     else:
         documents = _read_documents(data_path, max_documents=max_documents)
