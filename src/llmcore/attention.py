@@ -18,6 +18,13 @@ def _repeat_kv(x: torch.Tensor, repeats: int) -> torch.Tensor:
     return x.repeat_interleave(repeats, dim=1)
 
 
+def _scaled_dot_product_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout_p: float, causal: bool) -> torch.Tensor:
+    if q.is_cuda:
+        with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=False):
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=causal)
+    return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=causal)
+
+
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -89,7 +96,7 @@ class LinearAttention(nn.Module):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True) -> torch.Tensor:
         if not causal:
-            return F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, is_causal=False)
+            return _scaled_dot_product_attention(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, causal=False)
 
         q_phi = F.elu(q) + 1.0
         k_phi = F.elu(k) + 1.0
@@ -159,6 +166,6 @@ class Attention(nn.Module):
             attn = flash_attn_func(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), dropout_p=self.dropout.p if self.training else 0.0, causal=causal)
             attn = attn.transpose(1, 2)
         else:
-            attn = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, is_causal=causal)
+            attn = _scaled_dot_product_attention(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, causal=causal)
         attn = attn.transpose(1, 2).contiguous().view(batch, seq_len, self.d_model)
         return self.out_proj(self.dropout(attn))
