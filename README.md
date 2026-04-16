@@ -75,6 +75,8 @@ llmcore-train \
   --hf-dataset pritamdeb68/Small-LM-Pretraining \
   --hf-split train \
   --hf-text-columns text,title,summary,content \
+  --hf-streaming \
+  --hf-max-text-columns 4 \
   --output-dir runs/hf-small-lm \
   --sequence-length 1024 \
   --micro-batch-size 1 \
@@ -90,6 +92,9 @@ Notes:
 
 - If hf-text-columns is omitted, the loader auto-detects non-empty string columns.
 - Multiple text columns are concatenated per row with newline separators.
+- Use --hf-streaming for Hugging Face datasets that should be read lazily instead of loaded into RAM.
+- Use --hf-max-text-columns to cap the number of columns consumed when the dataset schema is very wide.
+- For very wide datasets, prefer an explicit fixed column list in --hf-text-columns.
 
 ## Reasoning Architecture
 
@@ -145,6 +150,8 @@ data_cfg = DataConfig(
   hf_dataset_name="pritamdeb68/Small-LM-Pretraining",
   hf_split="train",
   hf_text_columns=("text", "title", "summary", "content"),
+  hf_streaming=True,
+  hf_max_text_columns=4,
   sequence_length=1024,
   validation_split=0.005,
 )
@@ -182,6 +189,7 @@ DataConfig includes:
 
 - Local data: `data_path`, `data_source="local"`
 - Hugging Face: `data_source="hf"`, `hf_dataset_name`, `hf_dataset_config`, `hf_split`, `hf_text_columns`
+- Hugging Face streaming: `hf_streaming`, `hf_max_text_columns`
 - Packing: `sequence_length`, `validation_split`, `max_documents`
 
 TrainConfig includes:
@@ -203,6 +211,8 @@ Data:
 - --hf-config
 - --hf-split
 - --hf-text-columns
+- --hf-streaming
+- --hf-max-text-columns
 - --validation-split
 - --max-documents
 
