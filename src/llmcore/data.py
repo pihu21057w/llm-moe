@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -27,17 +26,13 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _normalize_text_columns(text_columns: tuple[str, ...] | list[str] | str | None, max_text_columns: int = 0) -> tuple[str, ...]:
+def _normalize_text_columns(text_columns: tuple[str, ...] | list[str] | str | None) -> tuple[str, ...]:
     if text_columns is None:
-        columns: list[str] = []
-    elif isinstance(text_columns, str):
-        # Accept either "text" or "text,title,body" forms.
-        columns = [column.strip() for column in text_columns.split(",") if column.strip()]
-    else:
-        columns = [str(column).strip() for column in text_columns if str(column).strip()]
-    if max_text_columns > 0:
-        columns = columns[:max_text_columns]
-    return tuple(columns)
+        return ()
+    if isinstance(text_columns, str):
+        raw = text_columns.split(",") if "," in text_columns else [text_columns]
+        return tuple(column.strip() for column in raw if column.strip())
+    return tuple(str(column).strip() for column in text_columns if str(column).strip())
 
 
 def _read_documents(data_path: str, max_documents: int | None = None) -> list[str]:
@@ -105,7 +100,7 @@ def _read_hf_documents(
     dataset_name: str,
     dataset_config: str,
     split: str,
-    text_columns: tuple[str, ...] | list[str] | str | None,
+    text_columns: tuple[str, ...],
     max_text_columns: int,
     max_documents: int | None,
     streaming: bool,
@@ -115,7 +110,7 @@ def _read_hf_documents(
     if not dataset_name:
         raise ValueError("hf_dataset_name is required when data_source='hf'")
 
-    normalized_columns = _normalize_text_columns(text_columns, max_text_columns=max_text_columns)
+    normalized_columns = _normalize_text_columns(text_columns)
     ds = load_dataset(dataset_name, dataset_config or None, split=split, streaming=streaming)
     if max_documents is not None:
         if streaming:
@@ -130,7 +125,7 @@ def _read_hf_documents(
         ds = ds.select(range(min(max_documents, len(ds))))
 
     if normalized_columns:
-        columns = list(normalized_columns)
+        columns = list(normalized_columns[:max_text_columns]) if max_text_columns > 0 else list(normalized_columns)
     else:
         sample_rows: list[dict] = []
         if streaming:
@@ -179,7 +174,7 @@ class StreamingTokenBlockDataset(IterableDataset):
         self.dataset_name = dataset_name
         self.dataset_config = dataset_config
         self.split = split
-        self.text_columns = _normalize_text_columns(text_columns, max_text_columns=max_text_columns)
+        self.text_columns = _normalize_text_columns(text_columns)
         self.max_text_columns = max_text_columns
         self.tokenizer = tokenizer
         self.block_size = block_size
@@ -196,7 +191,7 @@ class StreamingTokenBlockDataset(IterableDataset):
             raise ValueError("hf_dataset_name is required when data_source='hf'")
 
         ds = load_dataset(self.dataset_name, self.dataset_config or None, split=self.split, streaming=True)
-        columns = list(self.text_columns)
+        columns = list(self.text_columns[: self.max_text_columns]) if self.max_text_columns > 0 and self.text_columns else list(self.text_columns)
         if not columns:
             sample_rows: list[dict] = []
             for index, row in enumerate(ds):
@@ -235,20 +230,18 @@ class TokenBlockDataset(Dataset):
     def __init__(self, documents: Iterable[str], tokenizer: GPT4Tokenizer, block_size: int) -> None:
         self.block_size = block_size
         token_ids: list[int] = []
+        document_count = 0
         newline_tokens = tokenizer.encode("\n")
         for document in documents:
             token_ids.extend(tokenizer.encode(document))
             token_ids.extend(newline_tokens)
-        if len(token_ids) < 2:
-            raise ValueError("Dataset has too few tokens after preprocessing. Check text columns and data source.")
+            document_count += 1
         if len(token_ids) <= block_size + 1:
-            effective = max(1, len(token_ids) - 1)
-            warnings.warn(
-                f"Dataset token count ({len(token_ids)}) is smaller than requested sequence length ({block_size}). "
-                f"Reducing block size to {effective}.",
-                stacklevel=2,
+            raise ValueError(
+                f"Dataset is too small for sequence_length={block_size}. "
+                f"Only {len(token_ids)} tokens were prepared from {document_count} documents. "
+                "Reduce --sequence-length, increase --max-documents, or verify --hf-text-columns."
             )
-            self.block_size = effective
         self.tokens = torch.tensor(token_ids, dtype=torch.long)
 
     def __len__(self) -> int:
@@ -285,7 +278,7 @@ def build_datasets(
     hf_text_columns: tuple[str, ...] = (),
     hf_max_text_columns: int = 0,
 ) -> DatasetBundle:
-    normalized_columns = _normalize_text_columns(hf_text_columns, max_text_columns=hf_max_text_columns)
+    hf_text_columns = _normalize_text_columns(hf_text_columns)
     if data_source == "hf":
         if hf_streaming:
             return DatasetBundle(
@@ -293,7 +286,7 @@ def build_datasets(
                     dataset_name=hf_dataset_name,
                     dataset_config=hf_dataset_config,
                     split=hf_split,
-                    text_columns=normalized_columns,
+                    text_columns=hf_text_columns,
                     tokenizer=tokenizer,
                     block_size=sequence_length,
                     validation_split=validation_split,
@@ -305,7 +298,7 @@ def build_datasets(
                     dataset_name=hf_dataset_name,
                     dataset_config=hf_dataset_config,
                     split=hf_split,
-                    text_columns=normalized_columns,
+                    text_columns=hf_text_columns,
                     tokenizer=tokenizer,
                     block_size=sequence_length,
                     validation_split=validation_split,
@@ -318,7 +311,7 @@ def build_datasets(
             dataset_name=hf_dataset_name,
             dataset_config=hf_dataset_config,
             split=hf_split,
-            text_columns=normalized_columns,
+            text_columns=hf_text_columns,
             max_text_columns=hf_max_text_columns,
             max_documents=max_documents,
             streaming=False,

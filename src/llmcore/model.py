@@ -105,6 +105,8 @@ class DecoderOnlyTransformer(nn.Module):
 
     def forward(self, input_ids: torch.Tensor, position_offset: int = 0) -> dict[str, torch.Tensor]:
         x = self.token_embeddings(input_ids)
+        reasoning_losses = []
+        reasoning_losses = []
         aux_losses = []
         reasoning_losses = []
         for layer in self.layers:
