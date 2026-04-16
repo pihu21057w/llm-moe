@@ -8,6 +8,11 @@ from typing import Iterable
 import torch
 from torch.utils.data import Dataset, random_split
 
+try:
+    from datasets import load_dataset
+except Exception:  # pragma: no cover - optional dependency
+    load_dataset = None
+
 from .tokenizer import GPT4Tokenizer
 
 
@@ -60,6 +65,60 @@ def _read_documents(data_path: str, max_documents: int | None = None) -> list[st
     return [doc for doc in documents if doc.strip()]
 
 
+def _detect_text_columns(columns: list[str], rows: list[dict]) -> list[str]:
+    detected: list[str] = []
+    for column in columns:
+        for row in rows:
+            value = row.get(column)
+            if isinstance(value, str) and value.strip():
+                detected.append(column)
+                break
+    return detected
+
+
+def _combine_row_text(row: dict, text_columns: list[str]) -> str:
+    parts: list[str] = []
+    for column in text_columns:
+        value = row.get(column)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return "\n".join(parts)
+
+
+def _read_hf_documents(
+    dataset_name: str,
+    dataset_config: str,
+    split: str,
+    text_columns: tuple[str, ...],
+    max_documents: int | None,
+) -> list[str]:
+    if load_dataset is None:
+        raise ImportError("datasets package is not installed. Please install 'datasets' to use Hugging Face data sources.")
+    if not dataset_name:
+        raise ValueError("hf_dataset_name is required when data_source='hf'")
+
+    ds = load_dataset(dataset_name, dataset_config or None, split=split)
+    if max_documents is not None:
+        ds = ds.select(range(min(max_documents, len(ds))))
+
+    sample_rows = [ds[index] for index in range(min(len(ds), 64))]
+    available_columns = list(ds.column_names)
+    columns = [column for column in text_columns if column in available_columns] if text_columns else []
+    if not columns:
+        columns = _detect_text_columns(available_columns, sample_rows)
+    if not columns:
+        raise ValueError("No usable text columns found in Hugging Face dataset")
+
+    documents: list[str] = []
+    for row in ds:
+        combined = _combine_row_text(row, columns)
+        if combined:
+            documents.append(combined)
+        if max_documents is not None and len(documents) >= max_documents:
+            break
+    return documents
+
+
 class TokenBlockDataset(Dataset):
     def __init__(self, documents: Iterable[str], tokenizer: GPT4Tokenizer, block_size: int) -> None:
         self.block_size = block_size
@@ -91,8 +150,29 @@ class DatasetBundle:
     validation: Dataset
 
 
-def build_datasets(data_path: str, tokenizer: GPT4Tokenizer, sequence_length: int, validation_split: float = 0.005, seed: int = 42, max_documents: int | None = None) -> DatasetBundle:
-    documents = _read_documents(data_path, max_documents=max_documents)
+def build_datasets(
+    data_path: str,
+    tokenizer: GPT4Tokenizer,
+    sequence_length: int,
+    validation_split: float = 0.005,
+    seed: int = 42,
+    max_documents: int | None = None,
+    data_source: str = "local",
+    hf_dataset_name: str = "",
+    hf_dataset_config: str = "",
+    hf_split: str = "train",
+    hf_text_columns: tuple[str, ...] = (),
+) -> DatasetBundle:
+    if data_source == "hf":
+        documents = _read_hf_documents(
+            dataset_name=hf_dataset_name,
+            dataset_config=hf_dataset_config,
+            split=hf_split,
+            text_columns=hf_text_columns,
+            max_documents=max_documents,
+        )
+    else:
+        documents = _read_documents(data_path, max_documents=max_documents)
     dataset = TokenBlockDataset(documents, tokenizer=tokenizer, block_size=sequence_length)
     if len(dataset) < 2:
         train_size = len(dataset)

@@ -11,6 +11,8 @@ Decoder-only transformer training stack for Colab and Modal with:
 - Checkpoint saving and resume support
 - Tool-calling friendly prompt format and parsing helpers
 - Modular config surfaces for later extension
+- Hugging Face dataset loading (including multi-column text fusion)
+- Reasoning-style decoder blocks with iterative internal reasoning steps
 
 ## Colab Quickstart
 
@@ -122,6 +124,29 @@ validation_loader = DataLoader(
 )
 ```
 
+### 4b. Use Hugging Face dataset directly
+
+For your dataset (`pritamdeb68/Small-LM-Pretraining`), use this CLI call in Colab:
+
+```python
+!llmcore-train \
+	--data-source hf \
+	--hf-dataset pritamdeb68/Small-LM-Pretraining \
+	--hf-split train \
+	--hf-text-columns text,title,summary,content \
+	--output-dir runs/hf-small-lm \
+	--sequence-length 1024 \
+	--micro-batch-size 1 \
+	--grad-accum-steps 16 \
+	--max-steps 2000 \
+	--attention-backend auto \
+	--reasoning-steps 3 \
+	--reasoning-loss-weight 0.03 \
+	--activation-checkpointing
+```
+
+If `--hf-text-columns` is omitted, the loader auto-detects string columns and concatenates them per row.
+
 ### 5. Create the model
 
 ```python
@@ -205,6 +230,11 @@ Useful CLI flags:
 - `--grad-accum-steps 16`
 - `--attention-backend auto|flash|sdpa|linear`
 - `--resume runs/exp1/checkpoints/latest.pt`
+- `--data-source local|hf`
+- `--hf-dataset pritamdeb68/Small-LM-Pretraining`
+- `--hf-text-columns text,title,summary,content`
+- `--reasoning-steps 2`
+- `--reasoning-loss-weight 0.02`
 
 ## Data Format
 

@@ -48,6 +48,7 @@ def evaluate(model: DecoderOnlyTransformer, dataloader: DataLoader, device: torc
     model.eval()
     losses = []
     aux_losses = []
+    reasoning_losses = []
     with torch.no_grad():
         for batch_index, batch in enumerate(dataloader):
             if batch_index >= max_batches:
@@ -58,8 +59,13 @@ def evaluate(model: DecoderOnlyTransformer, dataloader: DataLoader, device: torc
                 loss = torch.nn.functional.cross_entropy(outputs["logits"].view(-1, outputs["logits"].size(-1)), targets.view(-1))
             losses.append(float(loss.item()))
             aux_losses.append(float(outputs["moe_aux_loss"].item()))
+            reasoning_losses.append(float(outputs["reasoning_aux_loss"].item()))
     model.train()
-    return {"eval/loss": float(np.mean(losses)) if losses else 0.0, "eval/moe_aux_loss": float(np.mean(aux_losses)) if aux_losses else 0.0}
+    return {
+        "eval/loss": float(np.mean(losses)) if losses else 0.0,
+        "eval/moe_aux_loss": float(np.mean(aux_losses)) if aux_losses else 0.0,
+        "eval/reasoning_aux_loss": float(np.mean(reasoning_losses)) if reasoning_losses else 0.0,
+    }
 
 
 def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validation_loader: DataLoader, tokenizer: GPT4Tokenizer, model_config: ModelConfig, train_config: TrainConfig, device: torch.device) -> None:
@@ -99,6 +105,7 @@ def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validati
         total_loss_value = 0.0
         total_lm_value = 0.0
         total_aux_value = 0.0
+        total_reasoning_value = 0.0
         for accumulation_step in range(train_config.grad_accum_steps):
             try:
                 inputs, targets = next(train_iterator)
@@ -111,13 +118,14 @@ def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validati
             with torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == "cuda"):
                 outputs = model(inputs)
                 lm_loss = torch.nn.functional.cross_entropy(outputs["logits"].view(-1, outputs["logits"].size(-1)), targets.view(-1))
-                loss = lm_loss + 0.01 * outputs["moe_aux_loss"]
+                loss = lm_loss + 0.01 * outputs["moe_aux_loss"] + train_config.reasoning_loss_weight * outputs["reasoning_aux_loss"]
                 loss = loss / train_config.grad_accum_steps
 
             loss.backward()
             total_loss_value += float(loss.item())
             total_lm_value += float(lm_loss.item())
             total_aux_value += float(outputs["moe_aux_loss"].item())
+            total_reasoning_value += float(outputs["reasoning_aux_loss"].item())
 
         if train_config.optim.grad_clip_norm > 0:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), train_config.optim.grad_clip_norm)
@@ -135,6 +143,7 @@ def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validati
             "train/loss": total_loss_value / train_config.grad_accum_steps,
             "train/lm_loss": total_lm_value / train_config.grad_accum_steps,
             "train/moe_aux_loss": total_aux_value / train_config.grad_accum_steps,
+            "train/reasoning_aux_loss": total_reasoning_value / train_config.grad_accum_steps,
             "train/lr": lr,
             "train/grad_norm": float(grad_norm.item()) if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
             "train/tokens_per_second": float(tokens_per_second),
@@ -181,7 +190,14 @@ def train_loop(model: DecoderOnlyTransformer, train_loader: DataLoader, validati
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a decoder-only transformer")
-    parser.add_argument("--data", required=True)
+    parser.add_argument("--data", default="")
+    parser.add_argument("--data-source", default="local", choices=["local", "hf"])
+    parser.add_argument("--hf-dataset", default="")
+    parser.add_argument("--hf-config", default="")
+    parser.add_argument("--hf-split", default="train")
+    parser.add_argument("--hf-text-columns", default="")
+    parser.add_argument("--validation-split", type=float, default=0.005)
+    parser.add_argument("--max-documents", type=int, default=0)
     parser.add_argument("--output-dir", default="runs/default")
     parser.add_argument("--preset", default="1b")
     parser.add_argument("--seed", type=int, default=42)
@@ -201,6 +217,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--moe-every-n-layers", type=int, default=4)
     parser.add_argument("--moe-num-experts", type=int, default=4)
     parser.add_argument("--moe-top-k", type=int, default=2)
+    parser.add_argument("--reasoning-steps", type=int, default=2)
+    parser.add_argument("--reasoning-loss-weight", type=float, default=0.02)
+    parser.add_argument("--reasoning-residual-scale", type=float, default=1.0)
+    parser.add_argument("--reasoning-hidden-mult", type=float, default=1.0)
+    parser.add_argument("--reasoning-no-share-parameters", action="store_true")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--warmup-steps", type=int, default=2000)
@@ -236,8 +257,24 @@ def main() -> None:
     model_config.moe_every_n_layers = args.moe_every_n_layers
     model_config.moe_num_experts = args.moe_num_experts
     model_config.moe_top_k = args.moe_top_k
+    model_config.reasoning_steps = args.reasoning_steps
+    model_config.reasoning_residual_scale = args.reasoning_residual_scale
+    model_config.reasoning_hidden_mult = args.reasoning_hidden_mult
+    model_config.reasoning_share_parameters = not args.reasoning_no_share_parameters
     model_config.use_checkpointing = args.activation_checkpointing
-    data_config = DataConfig(data_path=args.data, tokenizer_name=args.tokenizer, sequence_length=args.sequence_length)
+    hf_text_columns = tuple(column.strip() for column in args.hf_text_columns.split(",") if column.strip())
+    data_config = DataConfig(
+        data_path=args.data,
+        data_source=args.data_source,
+        tokenizer_name=args.tokenizer,
+        sequence_length=args.sequence_length,
+        validation_split=args.validation_split,
+        max_documents=args.max_documents if args.max_documents > 0 else None,
+        hf_dataset_name=args.hf_dataset,
+        hf_dataset_config=args.hf_config,
+        hf_split=args.hf_split,
+        hf_text_columns=hf_text_columns,
+    )
     train_config = TrainConfig(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -251,6 +288,7 @@ def main() -> None:
         resume=args.resume,
         monitor_wandb=args.wandb,
         use_activation_checkpointing=args.activation_checkpointing,
+        reasoning_loss_weight=args.reasoning_loss_weight,
     )
     train_config.optim.lr = args.lr
     train_config.optim.weight_decay = args.weight_decay
@@ -266,6 +304,11 @@ def main() -> None:
         validation_split=data_config.validation_split,
         seed=data_config.seed,
         max_documents=data_config.max_documents,
+        data_source=data_config.data_source,
+        hf_dataset_name=data_config.hf_dataset_name,
+        hf_dataset_config=data_config.hf_dataset_config,
+        hf_split=data_config.hf_split,
+        hf_text_columns=data_config.hf_text_columns,
     )
     train_loader = DataLoader(datasets.train, batch_size=train_config.micro_batch_size, shuffle=True, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=True)
     validation_loader = DataLoader(datasets.validation, batch_size=train_config.micro_batch_size, shuffle=False, num_workers=train_config.num_workers, pin_memory=train_config.pin_memory, drop_last=False)

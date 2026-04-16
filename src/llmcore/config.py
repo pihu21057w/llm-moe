@@ -7,6 +7,7 @@ from typing import Literal
 
 AttentionBackend = Literal["auto", "flash", "sdpa", "linear"]
 RopeScalingType = Literal["none", "linear", "ntk"]
+DataSourceType = Literal["local", "hf"]
 
 
 @dataclass(slots=True)
@@ -32,6 +33,10 @@ class ModelConfig:
     use_bias: bool = False
     use_rms_norm: bool = True
     use_checkpointing: bool = False
+    reasoning_steps: int = 2
+    reasoning_share_parameters: bool = True
+    reasoning_residual_scale: float = 1.0
+    reasoning_hidden_mult: float = 1.0
     tool_call_tokens: tuple[str, ...] = (
         "<tool_call>",
         "</tool_call>",
@@ -56,10 +61,15 @@ class ModelConfig:
 @dataclass(slots=True)
 class DataConfig:
     data_path: str = ""
+    data_source: DataSourceType = "local"
     tokenizer_name: str = "cl100k_base"
     sequence_length: int = 2048
     validation_split: float = 0.005
     max_documents: int | None = None
+    hf_dataset_name: str = ""
+    hf_dataset_config: str = ""
+    hf_split: str = "train"
+    hf_text_columns: tuple[str, ...] = ()
     seed: int = 42
 
 
@@ -101,6 +111,7 @@ class TrainConfig:
     use_activation_checkpointing: bool = False
     grad_norm_log: bool = True
     report_tokens_per_second: bool = True
+    reasoning_loss_weight: float = 0.02
     optim: OptimConfig = field(default_factory=OptimConfig)
 
     def output_path(self) -> Path:
